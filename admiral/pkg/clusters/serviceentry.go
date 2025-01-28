@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"k8s.io/utils/strings/slices"
 	"math"
 	"math/rand"
 	"reflect"
@@ -213,7 +214,9 @@ func modifyServiceEntryForNewServiceOrPod(
 			ctxLogger.Infof(common.CtxLogFormat, "event", "", "", clusterId, "neither deployment nor rollouts found")
 			continue
 		}
-		ingressEndpoint, port := rc.ServiceController.Cache.GetLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
+
+		ingressEndpoint, port := getOverwrittenLoadBalancer(ctxLogger, rc, clusterName, remoteRegistry.AdmiralCache)
+		//ingressEndpoint, port := rc.ServiceController.Cache.GetLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
 
 		registryConfig.Clusters[clusterId] = &registry.IdentityConfigCluster{
 			Name:            clusterId,
@@ -603,8 +606,8 @@ func modifyServiceEntryForNewServiceOrPod(
 					modifySEerr = common.AppendError(modifySEerr, err)
 				}
 			}
-
-			clusterIngress, _ := rc.ServiceController.Cache.GetLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
+			clusterIngress, _ := getOverwrittenLoadBalancer(ctxLogger, rc, clusterName, remoteRegistry.AdmiralCache)
+			//clusterIngress, _ := rc.ServiceController.Cache.GetLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
 			for _, ep := range serviceEntry.Endpoints {
 				//replace istio ingress-gateway address with local fqdn, note that ingress-gateway can be empty (not provisioned, or is not up)
 				if ep.Address == clusterIngress || ep.Address == "" {
@@ -873,6 +876,18 @@ func modifyServiceEntryForNewServiceOrPod(
 		deploymentOrRolloutName, deploymentOrRolloutNS, "", "", start)
 
 	return serviceEntries, modifySEerr
+}
+
+func getOverwrittenLoadBalancer(ctx *logrus.Entry, rc *RemoteController, clusterName string, admiralCache *AdmiralCache) (string, int) {
+	endpoint, port := rc.ServiceController.Cache.GetSingleLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
+	if slices.Contains(admiralCache.NLBEnabledCluster, clusterName) {
+		ctx.Info("Getting NLB for cluster:", clusterName)
+		endpoint, port = rc.ServiceController.Cache.GetSingleLoadBalancer(common.GetAdmiralParams().NLBIngressLabel, common.NamespaceIstioSystem)
+		if len(endpoint) > 0 {
+			ctx.Info("Overwriting LB:", endpoint, ", port:", port, ", clusterName:", clusterName)
+		}
+	}
+	return endpoint, port
 }
 
 func orderSourceClusters(ctx context.Context, rr *RemoteRegistry, services map[string]map[string]*k8sV1.Service) []string {
@@ -2613,8 +2628,9 @@ func generateServiceEntry(
 	}
 
 	start = time.Now()
-	endpointAddress, port := rc.ServiceController.Cache.
-		GetLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
+	endpointAddress, port := getOverwrittenLoadBalancer(ctxLogger, rc, rc.ClusterID, admiralCache)
+	//endpointAddress, port := rc.ServiceController.Cache.
+	//	GetSingleLoadBalancer(common.GetAdmiralParams().LabelSet.GatewayApp, common.NamespaceIstioSystem)
 	util.LogElapsedTimeSinceTask(ctxLogger, "GetLoadBalancer", "", "", rc.ClusterID, "", start)
 	var locality string
 	if rc.NodeController.Locality != nil {
